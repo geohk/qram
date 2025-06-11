@@ -14,6 +14,7 @@ document.addEventListener('DOMContentLoaded', () => {
   _on('present', 'click', present);
   _on('receive', 'click', receive);
   _on('camera', 'click', toggleCamera);
+  _on('customData', 'click', setCustomData);
   _clearProgress();
   _hide('video');
 });
@@ -23,7 +24,25 @@ const state = {
   enableCamera: false,
   runEncoder: false,
   size: 1024,
+  customData: null
 };
+
+function setCustomData() {
+  const textInput = document.getElementById('customDataInput').value;
+  if (!textInput.trim()) {
+    alert('Please enter some text to encode');
+    return;
+  }
+  
+  const enc = new TextEncoder();
+  state.customData = enc.encode(textInput);
+  
+  // Update the size display to match the actual data size
+  document.getElementById('size').value = state.customData.length;
+  
+  console.log(`Custom data set: ${state.customData.length} bytes`);
+  alert(`Custom data set: ${state.customData.length} bytes ready to present`);
+}
 
 async function toggleCamera() {
   const video = document.getElementById('video');
@@ -109,9 +128,17 @@ async function present() {
 
   state.runEncoder = true;
 
-  // generate fake data for presentation
-  const data = new Uint8Array(size);
-  crypto.getRandomValues(data);
+  // Use custom data if available, otherwise generate random data
+  let data;
+  if (state.customData) {
+    data = state.customData;
+    console.log('Using custom data for presentation');
+  } else {
+    // Generate random data of specified size
+    data = new Uint8Array(size);
+    crypto.getRandomValues(data);
+    console.log('Using random data for presentation');
+  }
 
   let version;
   const maxBlocksPerPacket = 50;
@@ -294,8 +321,234 @@ function _finish({data, time}) {
   const size = (data.length / 1024).toFixed(3);
   const msg = `Decoded ${size} KiB in time ${time} seconds`;
   console.log(msg);
+  
+  // Display decoded info
   const element = document.getElementById('finish');
-  element.innerHTML = `Decoded ${size} KiB in time ${time} seconds`;
+  
+  // Try to decode as text for display
+  let displayText;
+  try {
+    displayText = new TextDecoder().decode(data);
+    // Limit display text length to prevent UI issues
+    if (displayText.length > 1000) {
+      displayText = displayText.substring(0, 1000) + '... (truncated for display)';
+    }
+  } catch (e) {
+    displayText = '(Binary data)';
+  }
+  
+  // Check if the content might be base64
+  const isLikelyBase64 = /^[A-Za-z0-9+/=]+$/.test(displayText.trim());
+  
+  element.innerHTML = `
+    <div>${msg}</div>
+    <div style="margin-top: 10px">
+      <button id="downloadText" class="btn">Download as Text</button>
+      ${isLikelyBase64 ? '<button id="downloadBase64" class="btn">Decode Base64 & Download</button>' : ''}
+    </div>
+    <div style="margin-top: 10px; word-break: break-all; max-height: 200px; overflow-y: auto;">
+      <strong>Preview:</strong> ${displayText}
+    </div>
+  `;
+  
+  // Add click handler for download button
+  document.getElementById('downloadText').addEventListener('click', () => {
+    downloadAsText(data);
+  });
+  
+  // Add click handler for base64 decode button if shown
+  if (isLikelyBase64) {
+    document.getElementById('downloadBase64').addEventListener('click', () => {
+      downloadAsBase64Decoded(displayText);
+    });
+  }
+}
+
+function downloadAsText(data) {
+  try {
+    // Convert the data to text
+    const text = new TextDecoder().decode(data);
+    
+    // Check if the content looks like base64
+    const isLikelyBase64 = /^[A-Za-z0-9+/=]+$/.test(text.trim());
+    
+    if (isLikelyBase64) {
+      // If it looks like base64, try to decode it first
+      try {
+        // Clean the string and add padding if needed
+        let base64String = text.trim();
+        while (base64String.length % 4 !== 0) {
+          base64String += '=';
+        }
+        
+        // Try to decode the base64 string
+        let binaryString;
+        try {
+          // Try standard base64 first
+          binaryString = atob(base64String);
+        } catch (e) {
+          // If standard base64 fails, try base64url format
+          const base64 = base64String
+            .replace(/-/g, '+')
+            .replace(/_/g, '/');
+          binaryString = atob(base64);
+        }
+        
+        // Convert binary string to array buffer
+        const bytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        
+        // Try to convert to text
+        const decodedText = new TextDecoder().decode(bytes);
+        
+        // Create a Blob containing the decoded text
+        const blob = new Blob([decodedText], { type: 'text/plain' });
+        
+        // Create a download link and trigger it
+        const downloadLink = document.createElement('a');
+        downloadLink.href = URL.createObjectURL(blob);
+        downloadLink.download = 'decoded_base64.txt';
+        document.body.appendChild(downloadLink);
+        downloadLink.click();
+        document.body.removeChild(downloadLink);
+        
+        // Clean up the object URL
+        setTimeout(() => {
+          URL.revokeObjectURL(downloadLink.href);
+        }, 1000);
+        
+        console.log('Base64 decoded text file download initiated');
+        return; // Exit function after successful base64 decode and download
+      } catch (base64Error) {
+        console.warn('Content looked like base64 but failed to decode:', base64Error);
+        // Continue with normal text download if base64 decoding fails
+      }
+    }
+    
+    // If not base64 or base64 decoding failed, proceed with normal text download
+    const blob = new Blob([text], { type: 'text/plain' });
+    
+    // Create a download link and trigger it
+    const downloadLink = document.createElement('a');
+    downloadLink.href = URL.createObjectURL(blob);
+    downloadLink.download = 'qram_decoded_data.txt';
+    document.body.appendChild(downloadLink);
+    downloadLink.click();
+    document.body.removeChild(downloadLink);
+    
+    // Clean up the object URL
+    setTimeout(() => {
+      URL.revokeObjectURL(downloadLink.href);
+    }, 1000);
+    
+    console.log('Text file download initiated');
+  } catch (error) {
+    console.error('Error creating text file:', error);
+    alert('Failed to create text file: ' + error.message);
+    
+    // Fallback to binary download if text conversion fails
+    downloadAsBinary(data);
+  }
+}
+
+function downloadAsBase64Decoded(base64String) {
+  try {
+    // Clean the string (remove whitespace, etc.)
+    base64String = base64String.trim();
+    
+    // Add padding if needed
+    while (base64String.length % 4 !== 0) {
+      base64String += '=';
+    }
+    
+    // Decode the base64 string
+    let binaryString;
+    try {
+      // Try standard base64 first
+      binaryString = atob(base64String);
+    } catch (e) {
+      // If standard base64 fails, try base64url format
+      const base64 = base64String
+        .replace(/-/g, '+')
+        .replace(/_/g, '/');
+      binaryString = atob(base64);
+    }
+    
+    // Convert binary string to array buffer
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+      bytes[i] = binaryString.charCodeAt(i);
+    }
+    
+    // Try to determine if the decoded content is text or binary
+    let isText = true;
+    for (let i = 0; i < bytes.length; i++) {
+      // Check if byte is outside printable ASCII range and not common control chars
+      if ((bytes[i] < 32 || bytes[i] > 126) && 
+          ![9, 10, 13].includes(bytes[i])) { // tab, LF, CR
+        isText = false;
+        break;
+      }
+    }
+    
+    if (isText) {
+      // It's likely text, so decode and download as text
+      const text = new TextDecoder().decode(bytes);
+      const blob = new Blob([text], { type: 'text/plain' });
+      const downloadLink = document.createElement('a');
+      downloadLink.href = URL.createObjectURL(blob);
+      downloadLink.download = 'base64_decoded.txt';
+      document.body.appendChild(downloadLink);
+      downloadLink.click();
+      document.body.removeChild(downloadLink);
+    } else {
+      // It's likely binary, download as binary
+      const blob = new Blob([bytes], { type: 'application/octet-stream' });
+      const downloadLink = document.createElement('a');
+      downloadLink.href = URL.createObjectURL(blob);
+      downloadLink.download = 'base64_decoded.bin';
+      document.body.appendChild(downloadLink);
+      downloadLink.click();
+      document.body.removeChild(downloadLink);
+    }
+    
+    // Clean up the object URL
+    setTimeout(() => {
+      URL.revokeObjectURL(downloadLink.href);
+    }, 1000);
+    
+    console.log('Base64 decoded file download initiated');
+  } catch (error) {
+    console.error('Error decoding base64:', error);
+    alert('Failed to decode base64: ' + error.message);
+  }
+}
+
+function downloadAsBinary(data) {
+  try {
+    // Create a Blob containing the binary data
+    const blob = new Blob([data], { type: 'application/octet-stream' });
+    
+    // Create a download link and trigger it
+    const downloadLink = document.createElement('a');
+    downloadLink.href = URL.createObjectURL(blob);
+    downloadLink.download = 'qram_decoded_data.bin';
+    document.body.appendChild(downloadLink);
+    downloadLink.click();
+    document.body.removeChild(downloadLink);
+    
+    // Clean up the object URL
+    setTimeout(() => {
+      URL.revokeObjectURL(downloadLink.href);
+    }, 1000);
+    
+    console.log('Binary file download initiated');
+  } catch (error) {
+    console.error('Error creating binary file:', error);
+    alert('Failed to download file: ' + error.message);
+  }
 }
 
 function _clearProgress() {
